@@ -28,6 +28,8 @@
 //#define trace(...) { fprintf(stderr, __VA_ARGS__); }
 #define trace(fmt,...)
 
+#define METADATA_FIELD ":last_playpos"
+
 static DB_misc_t plugin;
 static DB_functions_t *deadbeef;
 
@@ -88,7 +90,7 @@ bookmark_save_state ()
         goto out;
     }
     int playpos = deadbeef->streamer_get_playpos ();
-    deadbeef->pl_set_meta_int (it, "last_playpos", playpos);
+    deadbeef->pl_set_meta_int (it, METADATA_FIELD, playpos);
     bookmark_write_metadata (it);
 out:
     if (it) {
@@ -104,7 +106,7 @@ bookmark_resume (ddb_event_track_t *ev)
         return 0;
     }
 
-    int playpos = (deadbeef->pl_find_meta_int (ev->track, "last_playpos", 0) - CONFIG_REWIND_TIME) * 1000;
+    int playpos = (deadbeef->pl_find_meta_int (ev->track, METADATA_FIELD, 0) - CONFIG_REWIND_TIME) * 1000;
     if (playpos > 0) {
         deadbeef->sendmessage (DB_EV_SEEK, 0, playpos, 0);
     }
@@ -177,7 +179,7 @@ bookmark_action_lookup (DB_plugin_action_t *action, int ctx)
         goto out;
     }
 
-    int playpos = (deadbeef->pl_find_meta_int (it, "last_playpos", 0) - CONFIG_REWIND_TIME) * 1000;
+    int playpos = (deadbeef->pl_find_meta_int (it, METADATA_FIELD, 0) - CONFIG_REWIND_TIME) * 1000;
     playpos = MAX (0, playpos);
 
     deadbeef->sendmessage (DB_EV_PLAY_NUM, 0, deadbeef->pl_get_idx_of (it), 0);
@@ -204,8 +206,8 @@ bookmark_get_actions (DB_playItem_t *it)
     deadbeef->pl_lock ();
     if (!it ||
         !CONFIG_ENABLED ||
-        !deadbeef->pl_meta_exists (it, "last_playpos") ||
-        !deadbeef->pl_find_meta_int (it, "last_playpos", 0))
+        !deadbeef->pl_meta_exists (it, METADATA_FIELD) ||
+        !deadbeef->pl_find_meta_int (it, METADATA_FIELD, 0))
     {
         lookup_action.flags |= DB_ACTION_DISABLED;
     }
@@ -215,7 +217,7 @@ bookmark_get_actions (DB_playItem_t *it)
     }
     int playpos = 0;
     if (it) {
-        playpos = MAX (deadbeef->pl_find_meta_int (it, "last_playpos", 0) - CONFIG_REWIND_TIME, 0);
+        playpos = MAX (deadbeef->pl_find_meta_int (it, METADATA_FIELD, 0) - CONFIG_REWIND_TIME, 0);
     }
     int hr = playpos/3600;
     int mn = (playpos-hr*3600)/60;
