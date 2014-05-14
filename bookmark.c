@@ -151,8 +151,8 @@ bookmark_stop (void)
     return 0;
 }
 
-static int
-bookmark_action_lookup (DB_plugin_action_t *action, int ctx)
+static DB_playItem_t *
+bookmark_get_selected_track (int ctx)
 {
     DB_playItem_t *it = NULL;
 
@@ -175,6 +175,29 @@ bookmark_action_lookup (DB_plugin_action_t *action, int ctx)
     else if (ctx == DDB_ACTION_CTX_NOWPLAYING) {
         it = deadbeef->streamer_get_playing_track ();
     }
+    return it;
+}
+
+static int
+bookmark_action_reset (DB_plugin_action_t *action, int ctx)
+{
+    DB_playItem_t *it = bookmark_get_selected_track (ctx);
+    if (!it) {
+        goto out;
+    }
+
+    deadbeef->pl_set_meta_int (it, METADATA_FIELD, 0);
+out:
+    if (it) {
+        deadbeef->pl_item_unref (it);
+    }
+    return 0;
+}
+
+static int
+bookmark_action_resume (DB_plugin_action_t *action, int ctx)
+{
+    DB_playItem_t *it = bookmark_get_selected_track (ctx);
     if (!it) {
         goto out;
     }
@@ -184,7 +207,6 @@ bookmark_action_lookup (DB_plugin_action_t *action, int ctx)
 
     deadbeef->sendmessage (DB_EV_PLAY_NUM, 0, deadbeef->pl_get_idx_of (it), 0);
     deadbeef->sendmessage (DB_EV_SEEK, 0, playpos, 0);
-
 out:
     if (it) {
         deadbeef->pl_item_unref (it);
@@ -192,12 +214,20 @@ out:
     return 0;
 }
 
+static DB_plugin_action_t reset_action = {
+    .title = "Reset last playback position",
+    .name = "bookmark_reset",
+    .flags = DB_ACTION_SINGLE_TRACK | DB_ACTION_ADD_MENU,
+    .callback2 = bookmark_action_reset,
+    .next = NULL
+};
+
 static DB_plugin_action_t lookup_action = {
     .title = "Resume last at position",
     .name = "bookmark_lookup",
     .flags = DB_ACTION_SINGLE_TRACK | DB_ACTION_ADD_MENU,
-    .callback2 = bookmark_action_lookup,
-    .next = NULL
+    .callback2 = bookmark_action_resume,
+    .next = &reset_action,
 };
 
 static DB_plugin_action_t *
@@ -210,10 +240,12 @@ bookmark_get_actions (DB_playItem_t *it)
         !deadbeef->pl_find_meta_int (it, METADATA_FIELD, 0))
     {
         lookup_action.flags |= DB_ACTION_DISABLED;
+        reset_action.flags |= DB_ACTION_DISABLED;
     }
     else
     {
         lookup_action.flags &= ~DB_ACTION_DISABLED;
+        reset_action.flags &= ~DB_ACTION_DISABLED;
     }
     int playpos = 0;
     if (it) {
