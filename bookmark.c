@@ -29,11 +29,15 @@
 #define trace(fmt,...)
 
 #define METADATA_FIELD ":last_playpos"
+#define BOOKMARK_FIELD ":bookmarks"
+#define MAX_BOOKMARKS 20
 
 static DB_misc_t plugin;
 static DB_functions_t *deadbeef;
 
-static char menu_item_title[100];
+static char menu_item_title_01[100];
+static char bookmarks[MAX_BOOKMARKS][20];
+static char name[MAX_BOOKMARKS][20];
 
 static int CONFIG_ENABLED = 0;
 static int CONFIG_AUTO_CONTINUE = 0;
@@ -56,31 +60,47 @@ load_config ()
     CONFIG_REWIND_TIME =    deadbeef->conf_get_int ("bookmark_manager.rewind_time", 0);
 }
 
-static int
-bookmark_write_metadata (DB_playItem_t *it)
+static void
+get_time (int time, int *hr, int *mn, int *sc)
 {
-    const char *dec = deadbeef->pl_find_meta_raw (it, ":DECODER");
-    char decoder_id[100];
-    if (dec) {
-        strncpy (decoder_id, dec, sizeof (decoder_id));
-        // find decoder
-        DB_decoder_t *dec = NULL;
-        DB_decoder_t **decoders = deadbeef->plug_get_decoder_list ();
-        for (int i = 0; decoders[i]; i++) {
-            if (!strcmp (decoders[i]->plugin.id, decoder_id)) {
-                dec = decoders[i];
-                if (dec->write_metadata) {
-                    dec->write_metadata (it);
-                }
-                break;
-            }
-        }
-    }
+    *hr = time/3600;
+    *mn = (time-(*hr)*3600)/60;
+    *sc = time-(*hr)*3600-(*mn)*60;
     return 0;
 }
 
 static int
-bookmark_save_state ()
+bookmark_write_metadata (DB_playItem_t *it)
+{
+    if (!it) {
+        return 0;
+    }
+    ddb_playlist_t *plt = deadbeef->pl_get_playlist (it);
+    if (plt) {
+        deadbeef->plt_save_config (plt);
+        deadbeef->plt_unref (plt);
+    }
+    else {
+        return 0;
+    }
+    return 1;
+}
+
+static int
+bookmark_add (DB_playItem_t *trk, int pos)
+{
+    if (!trk) {
+        return 0;
+    }
+    char value[20];
+    snprintf (value, sizeof (value), "%d", pos);
+    deadbeef->pl_append_meta (trk, BOOKMARK_FIELD, value);
+    bookmark_write_metadata (trk);
+    return 1;
+}
+
+static int
+bookmark_save ()
 {
     DB_playItem_t *it = deadbeef->streamer_get_playing_track ();
     if (!it) {
@@ -114,25 +134,44 @@ bookmark_resume (ddb_event_track_t *ev)
 }
 
 static int
+bookmark_song_finished (ddb_event_track_t *ev)
+{
+    if (!ev->track) {
+        return 0;
+    }
+    int playpos = deadbeef->streamer_get_playpos ();
+    int duration = deadbeef->pl_get_item_duration (ev->track);
+
+    if (playpos >= duration - 4) {
+        deadbeef->pl_set_meta_int (ev->track, METADATA_FIELD, 0);
+        bookmark_write_metadata (ev->track);
+    }
+    return 0;
+}
+
+static int
 bookmark_message (uint32_t id, uintptr_t ctx, uint32_t p1, uint32_t p2)
 {
     switch (id) {
-    case DB_EV_TERMINATE:
-    case DB_EV_PAUSE:
-    case DB_EV_PAUSED:
-    case DB_EV_STOP:
-    case DB_EV_NEXT:
-    case DB_EV_PREV:
-    case DB_EV_PLAY_NUM:
-    case DB_EV_PLAY_RANDOM:
-        bookmark_save_state ();
-        break;
-    case DB_EV_SONGSTARTED:
-        bookmark_resume ((ddb_event_track_t *)ctx);
-        break;
-    case DB_EV_CONFIGCHANGED:
-        load_config ();
-        break;
+        case DB_EV_TERMINATE:
+        case DB_EV_PAUSE:
+        case DB_EV_PAUSED:
+        case DB_EV_STOP:
+        case DB_EV_NEXT:
+        case DB_EV_PREV:
+        case DB_EV_PLAY_NUM:
+        case DB_EV_PLAY_RANDOM:
+            bookmark_save ();
+            break;
+        case DB_EV_SONGFINISHED:
+            bookmark_song_finished ((ddb_event_track_t *)ctx);
+            break;
+        case DB_EV_SONGSTARTED:
+            bookmark_resume ((ddb_event_track_t *)ctx);
+            break;
+        case DB_EV_CONFIGCHANGED:
+            load_config ();
+            break;
     }
     return 0;
 }
@@ -179,6 +218,21 @@ bookmark_get_selected_track (int ctx)
 }
 
 static int
+bookmark_action_select (DB_plugin_action_t *action, int ctx)
+{
+    DB_playItem_t *it = bookmark_get_selected_track (ctx);
+    if (!it) {
+        goto out;
+    }
+    //deadbeef->pl_set_meta_int (it, METADATA_FIELD, 0);
+out:
+    if (it) {
+        deadbeef->pl_item_unref (it);
+    }
+    return 0;
+}
+
+static int
 bookmark_action_reset (DB_plugin_action_t *action, int ctx)
 {
     DB_playItem_t *it = bookmark_get_selected_track (ctx);
@@ -214,54 +268,87 @@ out:
     return 0;
 }
 
-static DB_plugin_action_t reset_action = {
-    .title = "Reset last playback position",
+static DB_plugin_action_t bookmarks_action[MAX_BOOKMARKS];
+
+static DB_plugin_action_t
+reset_action = {
+    .title = "Reset playback position",
     .name = "bookmark_reset",
     .flags = DB_ACTION_SINGLE_TRACK | DB_ACTION_ADD_MENU,
     .callback2 = bookmark_action_reset,
-    .next = NULL
+    .next = &bookmarks_action[0]
 };
 
-static DB_plugin_action_t lookup_action = {
+static DB_plugin_action_t
+lookup_action = {
     .title = "Resume last at position",
     .name = "bookmark_lookup",
     .flags = DB_ACTION_SINGLE_TRACK | DB_ACTION_ADD_MENU,
     .callback2 = bookmark_action_resume,
-    .next = &reset_action,
+    .next = &reset_action
 };
 
 static DB_plugin_action_t *
 bookmark_get_actions (DB_playItem_t *it)
 {
-    deadbeef->pl_lock ();
     if (!it ||
         !CONFIG_ENABLED ||
         !deadbeef->pl_meta_exists (it, METADATA_FIELD) ||
         !deadbeef->pl_find_meta_int (it, METADATA_FIELD, 0))
     {
-        lookup_action.flags |= DB_ACTION_DISABLED;
-        reset_action.flags |= DB_ACTION_DISABLED;
+        lookup_action.flags &= ~DB_ACTION_ADD_MENU;
+        reset_action.flags &= ~DB_ACTION_ADD_MENU;
+        return &lookup_action;
     }
     else
     {
-        lookup_action.flags &= ~DB_ACTION_DISABLED;
-        reset_action.flags &= ~DB_ACTION_DISABLED;
+        lookup_action.flags |= DB_ACTION_ADD_MENU;
+        reset_action.flags |= DB_ACTION_ADD_MENU;
     }
+
     int playpos = 0;
+
     if (it) {
+        deadbeef->pl_lock ();
+        const char *field = deadbeef->pl_find_meta (it, BOOKMARK_FIELD);
+        if (field) {
+            int value = 0;
+            int value_before = -1;
+            int bytes_read = 0;
+            int i = 0;
+            while (sscanf (field, "%d\n%n", &value, &bytes_read) && i < MAX_BOOKMARKS && value != value_before) {
+                value_before = value;
+                field += bytes_read;
+                int hr, mn, sc = 0;
+                get_time (value, &hr, &mn, &sc);
+                snprintf (bookmarks[i], sizeof (bookmarks[i]), "Bookmarks/%02d:%02d:%02d", hr, mn, sc);
+                bookmarks_action[i].name = name[i];
+                bookmarks_action[i].flags = DB_ACTION_SINGLE_TRACK | DB_ACTION_ADD_MENU;
+                bookmarks_action[i].callback2 = bookmark_action_select;
+                bookmarks_action[i].next = NULL;
+                i++;
+            }
+        }
+        else {
+            bookmarks_action[0].title = "Bookmarks/---";
+            bookmarks_action[0].name = "bookmark_00";
+            bookmarks_action[0].flags = DB_ACTION_SINGLE_TRACK | DB_ACTION_ADD_MENU | DB_ACTION_DISABLED;
+            bookmarks_action[0].next = NULL;
+        }
+
         playpos = MAX (deadbeef->pl_find_meta_int (it, METADATA_FIELD, 0) - CONFIG_REWIND_TIME, 0);
+        deadbeef->pl_unlock ();
     }
-    int hr = playpos/3600;
-    int mn = (playpos-hr*3600)/60;
-    int sc = playpos-hr*3600-mn*60;
-    snprintf (menu_item_title, sizeof (menu_item_title), "Resume at last position (%02d:%02d:%02d)", hr, mn, sc);
-    lookup_action.title = menu_item_title;
-    deadbeef->pl_unlock ();
+    int hr, mn, sc = 0;
+    get_time (playpos, &hr, &mn, &sc);
+    snprintf (menu_item_title_01, sizeof (menu_item_title_01), "Resume at last position (%02d:%02d:%02d)", hr, mn, sc);
+    lookup_action.title = menu_item_title_01;
+
     return &lookup_action;
 }
 
 static const char settings_dlg[] =
-    "property \"Enable (track metadata gets modified!) \" checkbox bookmark_manager.save_playpos_enabled 0;"
+    "property \"Enable \" checkbox bookmark_manager.save_playpos_enabled 0;"
     "property \"Automatically continue from last playback position \" checkbox bookmark_manager.auto_continue 0;"
     "property \"Only save playback position of tracks longer than (seconds): \" spinbtn[0,10000,1] bookmark_manager.min_duration 0;"
     "property \"Start playback before saved playback position (seconds): \" spinbtn[0,1000,1] bookmark_manager.rewind_time 0;"

@@ -3,8 +3,6 @@
 
 if [ -f ./ddb_misc_bookmark_manager.so ]; then
 	/usr/bin/install -v -c -m 644 ./ddb_misc_bookmark_manager.so ${HOME}/.local/lib/deadbeef/
-else
-	/usr/bin/install -v -c -m 644 ./ddb_misc_bookmark_manager.so ${HOME}/.local/lib/deadbeef/
 fi
 
 CHECK_PATHS="/usr/local/lib/deadbeef /usr/lib/deadbeef"
